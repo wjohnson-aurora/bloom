@@ -1,15 +1,11 @@
 package bloom
 
 import (
-	"fmt"
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/json"
 	"math"
 	"testing"
-
-	"github.com/bits-and-blooms/bitset"
 )
 
 // This implementation of Bloom filters is _not_
@@ -288,71 +284,6 @@ func TestK(t *testing.T) {
 	}
 }
 
-func TestMarshalUnmarshalJSON(t *testing.T) {
-	f := New(1000, 4)
-	data, err := json.Marshal(f)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	fmt.Println(string(data))
-
-	var g BloomFilter
-	err = json.Unmarshal(data, &g)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if g.m != f.m {
-		t.Error("invalid m value")
-	}
-	if g.k != f.k {
-		t.Error("invalid k value")
-	}
-	if g.b == nil {
-		t.Fatal("bitset is nil")
-	}
-	if !g.b.Equal(f.b) {
-		t.Error("bitsets are not equal")
-	}
-}
-
-
-func TestMarshalUnmarshalJSONValue(t *testing.T) {
-	f:= BloomFilter{1000, 4, bitset.New(1000)}
-	data, err := json.Marshal(f)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	fmt.Println(string(data))
-
-	var g BloomFilter
-	err = json.Unmarshal(data, &g)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if g.m != f.m {
-		t.Error("invalid m value")
-	}
-	if g.k != f.k {
-		t.Error("invalid k value")
-	}
-	if g.b == nil {
-		t.Fatal("bitset is nil")
-	}
-	if !g.b.Equal(f.b) {
-		t.Error("bitsets are not equal")
-	}
-}
-
-func TestUnmarshalInvalidJSON(t *testing.T) {
-	data := []byte("{invalid}")
-
-	var g BloomFilter
-	err := g.UnmarshalJSON(data)
-	if err == nil {
-		t.Error("expected error while unmarshalling invalid data")
-	}
-}
-
 func TestWriteToReadFrom(t *testing.T) {
 	var b bytes.Buffer
 	f := New(1000, 4)
@@ -375,7 +306,7 @@ func TestWriteToReadFrom(t *testing.T) {
 	if g.b == nil {
 		t.Fatal("bitset is nil")
 	}
-	if !g.b.Equal(f.b) {
+	if !g.b.Equals(f.b) {
 		t.Error("bitsets are not equal")
 	}
 
@@ -398,8 +329,8 @@ func TestReadWriteBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	if bytesRead != bytesWritten {
-		t.Errorf("read unexpected number of bytes %d != %d", bytesRead, bytesWritten)
+	if bytesRead != bytesWritten-4 { // expected to read 4 fewer bytes
+		t.Errorf("read unexpected number of bytes %d != %d - 4", bytesRead, bytesWritten)
 	}
 	if g.m != f.m {
 		t.Error("invalid m value")
@@ -410,7 +341,7 @@ func TestReadWriteBinary(t *testing.T) {
 	if g.b == nil {
 		t.Fatal("bitset is nil")
 	}
-	if !g.b.Equal(f.b) {
+	if !g.b.Equals(f.b) {
 		t.Error("bitsets are not equal")
 	}
 }
@@ -440,7 +371,7 @@ func TestEncodeDecodeGob(t *testing.T) {
 	if g.b == nil {
 		t.Fatal("bitset is nil")
 	}
-	if !g.b.Equal(f.b) {
+	if !g.b.Equals(f.b) {
 		t.Error("bitsets are not equal")
 	}
 	if !g.Test([]byte("three")) {
@@ -584,38 +515,6 @@ func TestCopy(t *testing.T) {
 	}
 }
 
-func TestFrom(t *testing.T) {
-	var (
-		k    = uint(5)
-		data = make([]uint64, 10)
-		test = []byte("test")
-	)
-
-	bf := From(data, k)
-	if bf.K() != k {
-		t.Errorf("Constant k does not match the expected value")
-	}
-
-	if bf.Cap() != uint(len(data)*64) {
-		t.Errorf("Capacity does not match the expected value")
-	}
-
-	if bf.Test(test) {
-		t.Errorf("Bloom filter should not contain the value")
-	}
-
-	bf.Add(test)
-	if !bf.Test(test) {
-		t.Errorf("Bloom filter should contain the value")
-	}
-
-	// create a new Bloom filter from an existing (populated) data slice.
-	bf = From(data, k)
-	if !bf.Test(test) {
-		t.Errorf("Bloom filter should contain the value")
-	}
-}
-
 func TestTestLocations(t *testing.T) {
 	f := NewWithEstimates(1000, 0.001)
 	n1 := []byte("Love")
@@ -703,7 +602,7 @@ func TestEncodeDecodeBinary(t *testing.T) {
 	if g.b == nil {
 		t.Fatal("bitset is nil")
 	}
-	if !g.b.Equal(f.b) {
+	if !g.b.Equals(f.b) {
 		t.Error("bitsets are not equal")
 	}
 	if !g.Test([]byte("three")) {

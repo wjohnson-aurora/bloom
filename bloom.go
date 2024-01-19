@@ -9,7 +9,7 @@ A Bloom filter has two parameters: _m_, a maximum size (typically a reasonably l
 multiple of the cardinality of the set to represent) and _k_, the number of hashing
 functions on elements of the set. (The actual hashing functions are important, too,
 but this is not a parameter for this implementation). A Bloom filter is backed by
-a BitSet; a key is represented in the filter by setting the bits at each value of the
+a Bitmap; a key is represented in the filter by setting the bits at each value of the
 hashing functions (modulo _m_). Set membership is done by _testing_ whether the
 bits at each value of the hashing functions (again, modulo _m_) are set. If so,
 the item is in the set. If the item is actually in the set, a Bloom filter will
@@ -63,12 +63,11 @@ package bloom
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 
-	"github.com/bits-and-blooms/bitset"
+	"github.com/RoaringBitmap/roaring/roaring64"
 )
 
 // A BloomFilter is a representation of a set of _n_ items, where the main
@@ -77,7 +76,7 @@ import (
 type BloomFilter struct {
 	m uint
 	k uint
-	b *bitset.BitSet
+	b *roaring64.Bitmap
 }
 
 func max(x, y uint) uint {
@@ -90,20 +89,7 @@ func max(x, y uint) uint {
 // New creates a new Bloom filter with _m_ bits and _k_ hashing functions
 // We force _m_ and _k_ to be at least one to avoid panics.
 func New(m uint, k uint) *BloomFilter {
-	return &BloomFilter{max(1, m), max(1, k), bitset.New(m)}
-}
-
-// From creates a new Bloom filter with len(_data_) * 64 bits and _k_ hashing
-// functions. The data slice is not going to be reset.
-func From(data []uint64, k uint) *BloomFilter {
-	m := uint(len(data) * 64)
-	return FromWithM(data, m, k)
-}
-
-// FromWithM creates a new Bloom filter with _m_ length, _k_ hashing functions.
-// The data slice is not going to be reset.
-func FromWithM(data []uint64, m, k uint) *BloomFilter {
-	return &BloomFilter{m, k, bitset.From(data)}
+	return &BloomFilter{max(1, m), max(1, k), roaring64.NewBitmap()}
 }
 
 // baseHashes returns the four hash values of data that are used to create k
@@ -123,8 +109,8 @@ func location(h [4]uint64, i uint) uint64 {
 }
 
 // location returns the ith hashed location using the four base hash values
-func (f *BloomFilter) location(h [4]uint64, i uint) uint {
-	return uint(location(h, i) % uint64(f.m))
+func (f *BloomFilter) location(h [4]uint64, i uint) uint64 {
+	return location(h, i) % uint64(f.m)
 }
 
 // EstimateParameters estimates requirements for m and k.
@@ -153,8 +139,8 @@ func (f *BloomFilter) K() uint {
 	return f.k
 }
 
-// BitSet returns the underlying bitset for this filter.
-func (f *BloomFilter) BitSet() *bitset.BitSet {
+// Bitmap returns the underlying bitmap for this filter.
+func (f *BloomFilter) Bitmap() *roaring64.Bitmap {
 	return f.b
 }
 
@@ -162,7 +148,7 @@ func (f *BloomFilter) BitSet() *bitset.BitSet {
 func (f *BloomFilter) Add(data []byte) *BloomFilter {
 	h := baseHashes(data)
 	for i := uint(0); i < f.k; i++ {
-		f.b.Set(f.location(h, i))
+		f.b.Add(f.location(h, i))
 	}
 	return f
 }
@@ -178,7 +164,7 @@ func (f *BloomFilter) Merge(g *BloomFilter) error {
 		return fmt.Errorf("k's don't match: %d != %d", f.m, g.m)
 	}
 
-	f.b.InPlaceUnion(g.b)
+	f.b.Or(g.b)
 	return nil
 }
 
@@ -200,7 +186,7 @@ func (f *BloomFilter) AddString(data string) *BloomFilter {
 func (f *BloomFilter) Test(data []byte) bool {
 	h := baseHashes(data)
 	for i := uint(0); i < f.k; i++ {
-		if !f.b.Test(f.location(h, i)) {
+		if !f.b.Contains(f.location(h, i)) {
 			return false
 		}
 	}
@@ -218,7 +204,7 @@ func (f *BloomFilter) TestString(data string) bool {
 // otherwise.
 func (f *BloomFilter) TestLocations(locs []uint64) bool {
 	for i := 0; i < len(locs); i++ {
-		if !f.b.Test(uint(locs[i] % uint64(f.m))) {
+		if !f.b.Contains(locs[i] % uint64(f.m)) {
 			return false
 		}
 	}
@@ -234,10 +220,10 @@ func (f *BloomFilter) TestAndAdd(data []byte) bool {
 	h := baseHashes(data)
 	for i := uint(0); i < f.k; i++ {
 		l := f.location(h, i)
-		if !f.b.Test(l) {
+		if !f.b.Contains(l) {
 			present = false
 		}
-		f.b.Set(l)
+		f.b.Add(l)
 	}
 	return present
 }
@@ -258,9 +244,9 @@ func (f *BloomFilter) TestOrAdd(data []byte) bool {
 	h := baseHashes(data)
 	for i := uint(0); i < f.k; i++ {
 		l := f.location(h, i)
-		if !f.b.Test(l) {
+		if !f.b.Contains(l) {
 			present = false
-			f.b.Set(l)
+			f.b.Add(l)
 		}
 	}
 	return present
@@ -275,7 +261,7 @@ func (f *BloomFilter) TestOrAddString(data string) bool {
 
 // ClearAll clears all the data in a Bloom filter, removing all keys
 func (f *BloomFilter) ClearAll() *BloomFilter {
-	f.b.ClearAll()
+	f.b.Clear()
 	return f
 }
 
@@ -311,36 +297,11 @@ func EstimateFalsePositiveRate(m, k, n uint) (fpRate float64) {
 // Approximating the number of items
 // https://en.wikipedia.org/wiki/Bloom_filter#Approximating_the_number_of_items_in_a_Bloom_filter
 func (f *BloomFilter) ApproximatedSize() uint32 {
-	x := float64(f.b.Count())
+	x := float64(f.b.GetCardinality())
 	m := float64(f.Cap())
 	k := float64(f.K())
 	size := -1 * m / k * math.Log(1-x/m) / math.Log(math.E)
 	return uint32(math.Floor(size + 0.5)) // round
-}
-
-// bloomFilterJSON is an unexported type for marshaling/unmarshaling BloomFilter struct.
-type bloomFilterJSON struct {
-	M uint           `json:"m"`
-	K uint           `json:"k"`
-	B *bitset.BitSet `json:"b"`
-}
-
-// MarshalJSON implements json.Marshaler interface.
-func (f BloomFilter) MarshalJSON() ([]byte, error) {
-	return json.Marshal(bloomFilterJSON{f.m, f.k, f.b})
-}
-
-// UnmarshalJSON implements json.Unmarshaler interface.
-func (f *BloomFilter) UnmarshalJSON(data []byte) error {
-	var j bloomFilterJSON
-	err := json.Unmarshal(data, &j)
-	if err != nil {
-		return err
-	}
-	f.m = j.M
-	f.k = j.K
-	f.b = j.B
-	return nil
 }
 
 // WriteTo writes a binary representation of the BloomFilter to an i/o stream.
@@ -385,7 +346,7 @@ func (f *BloomFilter) ReadFrom(stream io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	b := &bitset.BitSet{}
+	b := roaring64.NewBitmap()
 	numBytes, err := b.ReadFrom(stream)
 	if err != nil {
 		return 0, err
@@ -436,7 +397,7 @@ func (f *BloomFilter) UnmarshalBinary(data []byte) error {
 
 // Equal tests for the equality of two Bloom filters
 func (f *BloomFilter) Equal(g *BloomFilter) bool {
-	return f.m == g.m && f.k == g.k && f.b.Equal(g.b)
+	return f.m == g.m && f.k == g.k && f.b.Equals(g.b)
 }
 
 // Locations returns a list of hash locations representing a data item.
